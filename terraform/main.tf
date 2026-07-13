@@ -90,7 +90,7 @@ data "aws_ami" "amazon_linux" {
 # 1. S3 BUCKET & INITIAL DATA
 # ════════════════════════════════════════════════════════════════════════
 resource "aws_s3_bucket" "sagemaker_bucket" {
-  bucket        = "sagemaker-us-east-1-654654585899-v3"
+  bucket        = "sagemaker-us-east-1-533267117878-v3"
   force_destroy = true
 }
 
