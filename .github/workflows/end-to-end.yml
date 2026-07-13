@@ -28,7 +28,7 @@ jobs:
     - name: Trigger SageMaker Pipeline
       env:
         AWS_REGION: us-east-1
-        S3_BUCKET: sagemaker-us-east-1-533267117878-v3
+        S3_BUCKET: sagemaker-us-east-1-339712725413-v3
         SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
         MLFLOW_TRACKING_URI: "http://ec2-34-239-233-193.compute-1.amazonaws.com:5000"
       run: |
@@ -67,7 +67,7 @@ jobs:
       env:
         AWS_REGION: us-east-1
         SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
-        S3_BUCKET: sagemaker-us-east-1-533267117878-v3
+        S3_BUCKET: sagemaker-us-east-1-339712725413-v3
         MLFLOW_TRACKING_URI: "http://ec2-34-239-233-193.compute-1.amazonaws.com:5000"
       run: |
         python deploy_latest_model.py
@@ -76,6 +76,6 @@ jobs:
       env:
         AWS_REGION: us-east-1
         SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
-        S3_BUCKET: sagemaker-us-east-1-533267117878-v3
+        S3_BUCKET: sagemaker-us-east-1-339712725413-v3
       run: |
         python scripts/setup_model_monitor.py
