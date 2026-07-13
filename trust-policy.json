@@ -15,6 +15,20 @@
                     "token.actions.githubusercontent.com:sub": "repo:obaida7/mlops-lab-02-aws-sagemaker-end-to-end:*"
                 }
             }
+        },
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "sagemaker.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+        },
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "events.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
         }
     ]
 }
