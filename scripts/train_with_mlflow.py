@@ -80,7 +80,30 @@ if mlflow:
                 json.dump({"rmse": float(rmse), "r2": float(r2)}, f)
 
             mlflow.log_artifact(metrics_path)
-            mlflow.xgboost.log_model(model, artifact_path="model")
+            mlflow.xgboost.log_model(model, artifact_path="model", registered_model_name="wine-quality-model")
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # MODEL EXPLAINABILITY (SHAP)
+            # ═══════════════════════════════════════════════════════════════════
+            try:
+                import shap
+                import matplotlib.pyplot as plt
+                
+                print("Calculating SHAP values for explainability...")
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(X_test)
+                
+                # Generate summary plot
+                shap.summary_plot(shap_values, X_test, show=False)
+                shap_plot_path = os.path.join(MODEL_DIR, "shap_summary.png")
+                plt.savefig(shap_plot_path, bbox_inches='tight')
+                plt.close()
+                
+                # Log SHAP plot to MLflow
+                mlflow.log_artifact(shap_plot_path, artifact_path="explainability")
+                print("SHAP explainability plot logged successfully!")
+            except Exception as shap_e:
+                print(f"Warning: SHAP explainability failed: {shap_e}")
 
         print("[OK] Trained + logged to MLflow")
     except Exception as e:

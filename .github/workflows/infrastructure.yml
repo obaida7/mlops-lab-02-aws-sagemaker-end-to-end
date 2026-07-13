@@ -1,0 +1,42 @@
+name: Deploy Infrastructure
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'terraform/**'
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
+
+    - name: Download Wine Dataset
+      run: |
+        python3 -c 'import csv, urllib.request; lines = urllib.request.urlopen("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv").read().decode("utf-8").splitlines(); r = csv.reader(lines, delimiter=";"); w = csv.writer(open("terraform/wine.csv", "w")); w.writerows(r)'
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Apply
+      working-directory: ./terraform
+      run: terraform apply -auto-approve

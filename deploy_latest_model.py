@@ -18,56 +18,59 @@ boto_session = boto3.Session(region_name=region)
 sm = boto_session.client("sagemaker")
 s3 = boto_session.client("s3")
 
-IMAGE_URI = f"720646828776.dkr.ecr.{region}.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3"
+IMAGE_URI = f"683313688378.dkr.ecr.{region}.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3"
 
 print(f"Region: {region}")
 print(f"Role: {role}")
 
 # ═══════════════════════════════════════════════════════════════════
-# STEP 1: Find latest completed training job
+# STEP 1: Find Production model from MLflow Registry
 # ═══════════════════════════════════════════════════════════════════
-print("\n[1/5] Finding latest completed training job...")
+print("\n[1/5] Finding Production model in MLflow Registry...")
 
-jobs = sm.list_training_jobs(
-    SortBy="CreationTime",
-    SortOrder="Descending",
-    MaxResults=20,
-)["TrainingJobSummaries"]
+import mlflow
+from mlflow.tracking import MlflowClient
 
-latest_job = None
-for job in jobs:
-    if job["TrainingJobStatus"] == "Completed":
-        latest_job = job["TrainingJobName"]
-        break
+MLFLOW_URI = os.environ.get("MLFLOW_TRACKING_URI")
+if not MLFLOW_URI:
+    raise ValueError("MLFLOW_TRACKING_URI must be set in environment!")
 
-if latest_job is None:
-    raise Exception("No completed training job found")
+mlflow.set_tracking_uri(MLFLOW_URI)
+client = MlflowClient()
 
-print(f"  Training job: {latest_job}")
+model_name_mlflow = "wine-quality-model"
+try:
+    prod_version = client.get_model_version_by_alias(model_name_mlflow, "production")
+except Exception as e:
+    print("No model found with 'production' alias! Skipping deployment.")
+    sys.exit(1)
 
-job_details = sm.describe_training_job(TrainingJobName=latest_job)
-model_artifact = job_details["ModelArtifacts"]["S3ModelArtifacts"]
-print(f"  Model artifact: {model_artifact}")
+version_num = prod_version.version
+model_uri = f"models:/{model_name_mlflow}@production"
+print(f"  Production Model Version: {version_num} (Run ID: {prod_version.run_id})")
+
+# Idempotency Check: Are we already running this version?
+try:
+    ep = sm.describe_endpoint(EndpointName=endpoint_name)
+    tags = sm.list_tags(ResourceArn=ep["EndpointArn"]).get("Tags", [])
+    current_version = next((t["Value"] for t in tags if t["Key"] == "MLflowVersion"), None)
+    if current_version == str(version_num):
+        print(f"  Endpoint is already running version {version_num}. No deployment needed!")
+        exit(0)
+except sm.exceptions.ClientError:
+    pass # No endpoint exists yet
 
 # ═══════════════════════════════════════════════════════════════════
-# STEP 2: Repackage model.tar.gz with inference code inside
+# STEP 2: Download from MLflow and repackage with inference code
 # ═══════════════════════════════════════════════════════════════════
-print("\n[2/5] Repackaging model with inference code...")
-
-bucket = model_artifact.split("/")[2]
-key = "/".join(model_artifact.split("/")[3:])
+print("\n[2/5] Downloading model from MLflow and repackaging...")
 
 tmpdir = tempfile.mkdtemp()
-original_tar = os.path.join(tmpdir, "original.tar.gz")
 extract_dir = os.path.join(tmpdir, "contents")
-new_tar = os.path.join(tmpdir, "model.tar.gz")
 
-s3.download_file(bucket, key, original_tar)
-
-os.makedirs(extract_dir, exist_ok=True)
-with tarfile.open(original_tar, "r:gz") as tar:
-    tar.extractall(extract_dir)
-print(f"  Extracted: {os.listdir(extract_dir)}")
+# Download the model directory directly from MLflow
+print(f"  Downloading from {model_uri}...")
+local_model_dir = mlflow.artifacts.download_artifacts(artifact_uri=model_uri, dst_path=extract_dir)
 
 # Remove any old code/ directory
 code_dir = os.path.join(extract_dir, "code")
@@ -75,13 +78,11 @@ if os.path.exists(code_dir):
     shutil.rmtree(code_dir)
 os.makedirs(code_dir)
 
-# Write inference.py
+# Write inference.py (Modified to load model.xgb from MLflow format)
 with open(os.path.join(code_dir, "inference.py"), "w") as f:
-    f.write("""import joblib
-import os
+    f.write("""import os
 import numpy as np
 import xgboost as xgb
-
 
 FEATURE_NAMES = [
     "Wine", "Alcohol", "Malic.acid", "Ash", "Acl", "Mg",
@@ -89,12 +90,10 @@ FEATURE_NAMES = [
     "Color.int", "Hue", "OD"
 ]
 
-
 def model_fn(model_dir):
-    model_path = os.path.join(model_dir, "model.joblib")
-    model = joblib.load(model_path)
+    model = xgb.XGBRegressor()
+    model.load_model(os.path.join(model_dir, "model.xgb"))
     return model
-
 
 def input_fn(request_body, content_type):
     if content_type == "text/csv":
@@ -106,30 +105,30 @@ def input_fn(request_body, content_type):
         return np.array(parsed)
     raise ValueError(f"Unsupported content type: {content_type}")
 
-
 def predict_fn(input_data, model):
     dmatrix = xgb.DMatrix(input_data, feature_names=FEATURE_NAMES)
     prediction = model.get_booster().predict(dmatrix)
     return prediction
 
-
 def output_fn(prediction, accept):
     return ",".join(str(round(float(p), 4)) for p in prediction)
 """)
 
-# Write MINIMAL requirements.txt - ONLY xgboost
+# Write MINIMAL requirements.txt
 with open(os.path.join(code_dir, "requirements.txt"), "w") as f:
     f.write("xgboost==2.0.3\n")
 
 print(f"  code/ contents: {os.listdir(code_dir)}")
 
 # Repackage tar
+new_tar = os.path.join(tmpdir, "model.tar.gz")
 with tarfile.open(new_tar, "w:gz") as tar:
     for item in os.listdir(extract_dir):
         tar.add(os.path.join(extract_dir, item), arcname=item)
 
 # Upload
-new_key = f"models/deploy/model-{int(time.time())}.tar.gz"
+bucket = os.environ["S3_BUCKET"]
+new_key = f"models/deploy/production-v{version_num}-{int(time.time())}.tar.gz"
 s3.upload_file(new_tar, bucket, new_key)
 new_model_uri = f"s3://{bucket}/{new_key}"
 print(f"  Uploaded: {new_model_uri}")
@@ -240,12 +239,20 @@ sm.create_endpoint_config(
             "InitialInstanceCount": 1,
         }
     ],
+    DataCaptureConfig={
+        "EnableCapture": True,
+        "InitialSamplingPercentage": 100,
+        "DestinationS3Uri": f"s3://{bucket}/data-capture",
+        "CaptureOptions": [{"CaptureMode": "Input"}, {"CaptureMode": "Output"}],
+        "CaptureContentTypeHeader": {"CsvContentTypes": ["text/csv"]},
+    }
 )
 print(f"  Endpoint config: {config_name}")
 
 sm.create_endpoint(
     EndpointName=endpoint_name,
     EndpointConfigName=config_name,
+    Tags=[{"Key": "MLflowVersion", "Value": str(version_num)}]
 )
 print(f"  Endpoint creation started: {endpoint_name}")
 
@@ -262,3 +269,38 @@ print(f"\n{'='*60}")
 print(f"  ENDPOINT STATUS: {final_status}")
 print(f"  ENDPOINT NAME:   {endpoint_name}")
 print(f"{'='*60}")
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 6: Configure Application Auto Scaling
+# ═══════════════════════════════════════════════════════════════════
+if final_status == "InService":
+    print("\n[6/6] Configuring Application Auto Scaling...")
+    autoscaling = boto_session.client("application-autoscaling")
+    resource_id = f"endpoint/{endpoint_name}/variant/primary"
+    
+    # Register scalable target
+    autoscaling.register_scalable_target(
+        ServiceNamespace="sagemaker",
+        ResourceId=resource_id,
+        ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+        MinCapacity=1,
+        MaxCapacity=3
+    )
+    
+    # Define scaling policy
+    autoscaling.put_scaling_policy(
+        PolicyName="wine-invocations-scaling-policy",
+        ServiceNamespace="sagemaker",
+        ResourceId=resource_id,
+        ScalableDimension="sagemaker:variant:DesiredInstanceCount",
+        PolicyType="TargetTrackingScaling",
+        TargetTrackingScalingPolicyConfiguration={
+            "TargetValue": 100.0,
+            "PredefinedMetricSpecification": {
+                "PredefinedMetricType": "SageMakerVariantInvocationsPerInstance"
+            },
+            "ScaleInCooldown": 300,
+            "ScaleOutCooldown": 60
+        }
+    )
+    print("  AutoScaling configured successfully! (Max 3 instances)")

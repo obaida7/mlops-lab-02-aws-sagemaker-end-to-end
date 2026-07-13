@@ -1,0 +1,81 @@
+name: End-to-End MLOps Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  train_and_register:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install boto3 sagemaker==2.224.0
+
+    - name: Trigger SageMaker Pipeline
+      env:
+        AWS_REGION: us-east-1
+        S3_BUCKET: sagemaker-us-east-1-654654585899-v3
+        SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+        MLFLOW_TRACKING_URI: "http://ec2-18-206-168-192.compute-1.amazonaws.com:5000"
+      run: |
+        python scripts/create_pipeline.py
+
+    - name: Wait for SageMaker to finish
+      env:
+        AWS_REGION: us-east-1
+      run: |
+        python scripts/wait_for_sagemaker.py
+
+  approve_and_deploy:
+    needs: train_and_register
+    environment: production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install boto3 sagemaker==2.224.0 scikit-learn joblib mlflow
+
+    - name: Deploy endpoint from MLflow
+      env:
+        AWS_REGION: us-east-1
+        SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+        S3_BUCKET: sagemaker-us-east-1-654654585899-v3
+        MLFLOW_TRACKING_URI: "http://ec2-18-206-168-192.compute-1.amazonaws.com:5000"
+      run: |
+        python deploy_latest_model.py
+
+    - name: Setup Model Monitor
+      env:
+        AWS_REGION: us-east-1
+        SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
+        S3_BUCKET: sagemaker-us-east-1-654654585899-v3
+      run: |
+        python scripts/setup_model_monitor.py
