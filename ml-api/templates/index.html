@@ -294,19 +294,42 @@
 <body>
 
     <div class="header">
-        <span class="badge">AWS SageMaker End-to-End MLOps</span>
-        <h1>Banking Customer Churn Intelligence</h1>
-        <p>Real-time customer attrition risk scoring powered by SageMaker Endpoints, Model Registry & Model Monitor</p>
+        <div style="display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin-bottom: 0.75rem;">
+            <span class="badge" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.4); color: #34d399;">● SageMaker Serverless Endpoint: InService</span>
+            <span class="badge" style="background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.4); color: #60a5fa;">● DynamoDB Feature Store: <10ms</span>
+            <span class="badge" style="background: rgba(168, 85, 247, 0.15); border-color: rgba(168, 85, 247, 0.4); color: #c084fc;">● S3 Data Capture: Active</span>
+            <span class="badge" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #fbbf24;">● ECOA Fair Lending: Monitored</span>
+        </div>
+        <h1>Apex Bank | Churn Risk Intelligence</h1>
+        <p>Enterprise Real-Time ML Serving connected to SageMaker Serverless Inference, DynamoDB Online Feature Store, and S3 Data Capture</p>
     </div>
 
     <div class="container">
         <!-- Customer Input Form -->
         <div class="card">
             <h2>Customer Profile Input</h2>
+
+            <!-- Online Feature Store Lookup Bar -->
+            <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 10px; padding: 1rem; margin-bottom: 1.25rem;">
+                <div style="font-size: 0.8rem; font-weight: 600; color: #93c5fd; text-transform: uppercase; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
+                    <span>⚡ DynamoDB Online Feature Store (<10ms Lookup)</span>
+                    <span id="fsLatency" style="font-size: 0.75rem; color: #34d399;">Ready</span>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="number" id="txtCustomerId" placeholder="Enter Customer ID (e.g. 15600001, 15600002)" style="flex: 1; padding: 0.5rem 0.75rem; font-size: 0.85rem;" value="15600001">
+                    <button type="button" class="demo-btn" onclick="fetchCustomerFeatures()" style="flex: 0 0 140px; background: #2563eb; color: #fff; border: none; font-weight: 600;">Fetch Features</button>
+                </div>
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                    <span style="font-size: 0.75rem; color: #64748b; align-self: center;">Quick Select:</span>
+                    <button type="button" class="demo-btn" style="flex: unset; padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="quickSelectCustomer(15600001)">Customer #15600001</button>
+                    <button type="button" class="demo-btn" style="flex: unset; padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="quickSelectCustomer(15600002)">Customer #15600002</button>
+                    <button type="button" class="demo-btn" style="flex: unset; padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="quickSelectCustomer(15600015)">Customer #15600015</button>
+                </div>
+            </div>
             
             <div class="demo-bar">
-                <button type="button" class="demo-btn" onclick="loadHighRisk()">Load High-Risk Profile</button>
-                <button type="button" class="demo-btn" onclick="loadLowRisk()">Load Low-Risk Profile</button>
+                <button type="button" class="demo-btn" onclick="loadHighRisk()">Load Synthetic High-Risk Profile</button>
+                <button type="button" class="demo-btn" onclick="loadLowRisk()">Load Synthetic Low-Risk Profile</button>
             </div>
 
             <form id="churnForm">
@@ -422,6 +445,52 @@
     </div>
 
     <script>
+        async function fetchCustomerFeatures() {
+            const customerId = document.getElementById("txtCustomerId").value.trim();
+            if (!customerId) {
+                alert("Please enter a Customer ID");
+                return;
+            }
+            const statusLabel = document.getElementById("fsLatency");
+            statusLabel.innerText = "Querying DynamoDB...";
+            statusLabel.style.color = "#60a5fa";
+
+            const t0 = performance.now();
+            try {
+                const res = await fetch(`/features/${customerId}`);
+                const data = await res.json();
+                const latency = Math.round(performance.now() - t0);
+
+                if (data.found && data.features) {
+                    const f = data.features;
+                    document.getElementById("CreditScore").value = f.CreditScore;
+                    document.getElementById("Geography").value = f.Geography;
+                    document.getElementById("Gender").value = f.Gender;
+                    document.getElementById("Age").value = f.Age;
+                    document.getElementById("Tenure").value = f.Tenure;
+                    document.getElementById("Balance").value = parseFloat(f.Balance).toFixed(2);
+                    document.getElementById("NumOfProducts").value = f.NumOfProducts;
+                    document.getElementById("HasCrCard").value = f.HasCrCard;
+                    document.getElementById("IsActiveMember").value = f.IsActiveMember;
+                    document.getElementById("EstimatedSalary").value = parseFloat(f.EstimatedSalary).toFixed(2);
+
+                    statusLabel.innerText = `● Retrieved from DynamoDB in ${latency}ms`;
+                    statusLabel.style.color = "#34d399";
+                } else {
+                    statusLabel.innerText = `Customer #${customerId} not found`;
+                    statusLabel.style.color = "#f87171";
+                }
+            } catch (err) {
+                statusLabel.innerText = `Error: ${err.message}`;
+                statusLabel.style.color = "#f87171";
+            }
+        }
+
+        function quickSelectCustomer(id) {
+            document.getElementById("txtCustomerId").value = id;
+            fetchCustomerFeatures();
+        }
+
         function loadHighRisk() {
             document.getElementById("CreditScore").value = "505";
             document.getElementById("Geography").value = "1"; // Germany
