@@ -13,8 +13,8 @@ REGION = os.environ.get("AWS_REGION", "us-east-2")
 BUCKET = os.environ.get("S3_BUCKET", "sagemaker-us-east-2-227246780492-bank-churn")
 MODEL_PACKAGE_GROUP = "bank-customer-churn"
 
-# Official AWS Scikit-learn serving image for us-east-2
-IMAGE_URI = f"257758044811.dkr.ecr.{REGION}.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3"
+# Official AWS XGBoost serving image for us-east-2
+IMAGE_URI = f"257758044811.dkr.ecr.{REGION}.amazonaws.com/sagemaker-xgboost:1.7-1"
 
 boto_session = boto3.Session(region_name=REGION)
 sm = boto_session.client("sagemaker")

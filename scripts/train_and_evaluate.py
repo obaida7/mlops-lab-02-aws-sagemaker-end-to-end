@@ -156,6 +156,9 @@ def main():
         # Fallback if executed from root
         shutil.copyfile("scripts/inference.py", os.path.join(code_dir, "inference.py"))
 
+    with open(os.path.join(code_dir, "requirements.txt"), "w") as f:
+        f.write("xgboost>=1.7.0\njoblib>=1.2.0\npandas>=1.5.0\nscikit-learn>=1.2.0\n")
+
     # Prepare standard SageMaker evaluation report JSON
     eval_report = {
         "binary_classification_metrics": {
