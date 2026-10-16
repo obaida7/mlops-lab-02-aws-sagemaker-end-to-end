@@ -19,6 +19,9 @@ BUCKET = os.environ.get("S3_BUCKET", "sagemaker-us-east-2-227246780492-bank-chur
 MODEL_PACKAGE_GROUP = "bank-customer-churn"
 ENDPOINT_NAME = "bank-churn-endpoint"
 
+if "AWS_PROFILE" not in os.environ and "AWS_ACCESS_KEY_ID" not in os.environ:
+    os.environ["AWS_PROFILE"] = "agent-toolkit"
+
 boto_session = boto3.Session(region_name=REGION)
 sm = boto_session.client("sagemaker")
 runtime = boto_session.client("sagemaker-runtime")
