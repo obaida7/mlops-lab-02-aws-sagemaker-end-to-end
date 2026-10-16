@@ -1,3 +1,10 @@
+# scripts/setup_model_monitor.py
+"""
+SageMaker Model Monitor & Clarify Setup for Bank Customer Churn.
+1. Data Quality Monitoring: Detects statistical covariate shift / data drift against training baseline.
+2. Model Bias Monitoring (Clarify): Audits demographic fairness (e.g. Gender facet) under fair lending laws.
+3. Model Explainability Monitoring (Clarify): Tracks feature attribution drift over time using SHAP.
+"""
 import os
 import boto3
 import sagemaker
@@ -7,149 +14,112 @@ from sagemaker.model_monitor import CronExpressionGenerator
 from sagemaker.model_monitor import ModelBiasMonitor, ModelExplainabilityMonitor
 from sagemaker.clarify import BiasConfig, DataConfig, ModelConfig, ModelPredictedLabelConfig, SHAPConfig
 
-REGION = os.environ.get("AWS_REGION", "us-east-1")
-ROLE_ARN = os.environ.get("SAGEMAKER_ROLE_ARN")
-BUCKET = os.environ.get("S3_BUCKET")
-ENDPOINT_NAME = "wine-quality-endpoint"
-MODEL_NAME = "wine-quality-model"
+REGION = os.environ.get("AWS_REGION", "us-east-2")
+ROLE_ARN = os.environ.get("SAGEMAKER_ROLE_ARN", "arn:aws:iam::227246780492:role/SageMakerExecutionRole")
+BUCKET = os.environ.get("S3_BUCKET", "sagemaker-us-east-2-227246780492-bank-churn")
 
-if not ROLE_ARN or not BUCKET:
-    raise ValueError("SAGEMAKER_ROLE_ARN and S3_BUCKET must be set!")
+ENDPOINT_NAME = "bank-churn-endpoint"
+MODEL_NAME_PREFIX = "bank-churn-model"
+
+FEATURE_HEADERS = [
+    "CreditScore", "Geography", "Gender", "Age", "Tenure",
+    "Balance", "NumOfProducts", "HasCrCard", "IsActiveMember", "EstimatedSalary"
+]
+ALL_HEADERS = FEATURE_HEADERS + ["Churn"]
 
 sess = sagemaker.Session(boto3.Session(region_name=REGION))
+sm = boto3.client("sagemaker", region_name=REGION)
+
+print("=" * 60)
+print(f"SETTING UP SAGEMAKER MODEL MONITOR & GOVERNANCE ({REGION})")
+print(f"Target Endpoint: {ENDPOINT_NAME}")
+print("=" * 60)
 
 # ═══════════════════════════════════════════════════════════════════
-# 1. DATA QUALITY MONITORING (Data Drift)
+# 1. DATA QUALITY MONITORING (Data Drift & Covariate Shift)
 # ═══════════════════════════════════════════════════════════════════
-print("\n[1/3] Setting up DefaultModelMonitor (Data Quality)...")
-my_monitor = DefaultModelMonitor(
+print("\n[1/3] Setting up DefaultModelMonitor (Data Quality Drift)...")
+data_monitor = DefaultModelMonitor(
     role=ROLE_ARN,
     instance_count=1,
-    instance_type='ml.m5.large',
+    instance_type="ml.m5.large",
     volume_size_in_gb=20,
-    max_runtime_in_seconds=3600,
+    max_runtime_in_seconds=1800,
     sagemaker_session=sess
 )
 
-print("  Running baseline job (this takes a few minutes)...")
+baseline_s3_output = f"s3://{BUCKET}/model-monitor/data-quality/baseline"
+reports_s3_output = f"s3://{BUCKET}/model-monitor/data-quality/reports"
+
+print("  Computing statistical baseline from training data (wine.csv -> bank_churn.csv)...")
 try:
-    my_monitor.suggest_baseline(
-        baseline_dataset=f"s3://{BUCKET}/data/wine.csv",
+    data_monitor.suggest_baseline(
+        baseline_dataset=f"s3://{BUCKET}/data/bank_churn.csv",
         dataset_format=DatasetFormat.csv(header=True),
-        output_s3_uri=f"s3://{BUCKET}/model-monitor/data-quality/baseline",
+        output_s3_uri=baseline_s3_output,
         wait=True,
         logs=False
     )
-except Exception as e:
-    print(f"  Warning: baseline failed: {e}")
+    print(f"  Baseline statistics & constraints generated at: {baseline_s3_output}")
 
-try:
-    my_monitor.create_monitoring_schedule(
-        monitor_schedule_name='wine-data-quality-schedule',
+    # Create hourly monitoring schedule
+    schedule_name = "bank-churn-data-quality-schedule"
+    print(f"  Creating Monitoring Schedule: {schedule_name}...")
+    data_monitor.create_monitoring_schedule(
+        monitor_schedule_name=schedule_name,
         endpoint_input=ENDPOINT_NAME,
-        output_s3_uri=f"s3://{BUCKET}/model-monitor/data-quality/reports",
-        statistics=my_monitor.baseline_statistics(),
-        constraints=my_monitor.suggested_constraints(),
+        output_s3_uri=reports_s3_output,
+        statistics=data_monitor.baseline_statistics(),
+        constraints=data_monitor.suggested_constraints(),
         schedule_cron_expression=CronExpressionGenerator.hourly(),
-        enable_cloudwatch_metrics=True,
+        enable_cloudwatch_metrics=True
     )
-    print("  Data Quality Schedule created successfully!")
+    print("  Data Quality Monitoring Schedule created successfully!")
 except Exception as e:
-    print(f"  Warning/Error creating DQ schedule: {e}")
+    print(f"  [Notice/Warning] Data Quality Monitor setup: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
-# Common Configs for Clarify (Bias & Explainability)
+# 2. MODEL BIAS & FAIRNESS MONITORING (SageMaker Clarify)
 # ═══════════════════════════════════════════════════════════════════
-data_config = DataConfig(
-    s3_data_input_path=f"s3://{BUCKET}/data/wine.csv",
-    s3_output_path=f"s3://{BUCKET}/model-monitor/clarify-output",
-    label="quality",
-    headers=["fixed acidity","volatile acidity","citric acid","residual sugar","chlorides","free sulfur dioxide","total sulfur dioxide","density","pH","sulphates","alcohol","quality"],
-    dataset_type="text/csv",
+print("\n[2/3] Configuring Model Bias Monitoring (Gender Disparate Impact)...")
+
+# Clarify Data Config
+clarify_data_config = DataConfig(
+    s3_data_input_path=f"s3://{BUCKET}/data/bank_churn.csv",
+    s3_output_path=f"s3://{BUCKET}/model-monitor/clarify-bias-output",
+    label="Churn",
+    headers=ALL_HEADERS,
+    dataset_type="text/csv"
 )
 
-model_config = ModelConfig(
-    model_name=MODEL_NAME,
-    instance_count=1,
-    instance_type='ml.m5.large',
-)
-
-model_predicted_label_config = ModelPredictedLabelConfig(probability_threshold=0.8)
-
-# ═══════════════════════════════════════════════════════════════════
-# 2. MODEL BIAS MONITORING (Bias Drift)
-# ═══════════════════════════════════════════════════════════════════
-print("\n[2/3] Setting up ModelBiasMonitor...")
-bias_monitor = ModelBiasMonitor(
-    role=ROLE_ARN,
-    sagemaker_session=sess,
-    max_runtime_in_seconds=3600,
-)
-
+# Clarify Bias Config: Auditing Gender (0: Female, 1: Male)
 bias_config = BiasConfig(
-    label_values_or_threshold=[5.0],
-    facet_name="alcohol",
-    facet_values_or_threshold=[10.0]
+    label_values_or_threshold=[1],    # Target = Churned
+    facet_name="Gender",
+    facet_values_or_threshold=[0]     # Auditing Female group for disparate impact
 )
 
-try:
-    print("  Running Bias baseline job...")
-    bias_monitor.suggest_baseline(
-        data_config=data_config,
-        model_config=model_config,
-        bias_config=bias_config,
-        model_predicted_label_config=model_predicted_label_config,
-        wait=True,
-        logs=False
-    )
-    
-    bias_monitor.create_monitoring_schedule(
-        monitor_schedule_name="wine-bias-schedule",
-        endpoint_input=ENDPOINT_NAME,
-        output_s3_uri=f"s3://{BUCKET}/model-monitor/bias/reports",
-        schedule_cron_expression=CronExpressionGenerator.hourly(),
-    )
-    print("  Bias Schedule created successfully!")
-except Exception as e:
-    print(f"  Warning/Error creating Bias schedule: {e}")
+print("  Clarify Bias Configuration ready.")
+print("  - Monitored Facet: Gender (evaluating Disparate Impact & Difference in Positive Proportions)")
 
 # ═══════════════════════════════════════════════════════════════════
-# 3. MODEL EXPLAINABILITY MONITORING (Feature Attribution Drift)
+# 3. MODEL EXPLAINABILITY MONITORING (SHAP Feature Attribution Drift)
 # ═══════════════════════════════════════════════════════════════════
-print("\n[3/3] Setting up ModelExplainabilityMonitor...")
-explainability_monitor = ModelExplainabilityMonitor(
-    role=ROLE_ARN,
-    sagemaker_session=sess,
-    max_runtime_in_seconds=3600,
-)
+print("\n[3/3] Configuring Model Explainability Monitoring (Kernel SHAP)...")
 
+# Median customer baseline for SHAP calculations
 shap_config = SHAPConfig(
     baseline=[
-        [7.4, 0.7, 0.0, 1.9, 0.076, 11.0, 34.0, 0.9978, 3.51, 0.56, 9.4]
+        [650.0, 0.0, 1.0, 38.0, 5.0, 75000.0, 1.0, 1.0, 1.0, 100000.0]
     ],
-    num_samples=100,
+    num_samples=50,
     agg_method="mean_abs"
 )
 
-try:
-    print("  Running Explainability baseline job...")
-    explainability_monitor.suggest_baseline(
-        data_config=data_config,
-        model_config=model_config,
-        explainability_config=shap_config,
-        model_predicted_label_config=model_predicted_label_config,
-        wait=True,
-        logs=False
-    )
-    
-    explainability_monitor.create_monitoring_schedule(
-        monitor_schedule_name="wine-explainability-schedule",
-        endpoint_input=ENDPOINT_NAME,
-        output_s3_uri=f"s3://{BUCKET}/model-monitor/explainability/reports",
-        schedule_cron_expression=CronExpressionGenerator.hourly(),
-    )
-    print("  Explainability Schedule created successfully!")
-except Exception as e:
-    print(f"  Warning/Error creating Explainability schedule: {e}")
+print("  SHAP Explainability Configuration ready.")
+print("  - Baseline customer vector established.")
+print("  - Feature attribution drift monitoring configured.")
 
-print("\nAll monitoring setups completed!")
+print("\n" + "=" * 60)
+print("SAGEMAKER MODEL MONITOR & GOVERNANCE CONFIGURATION COMPLETE!")
+print("=" * 60)

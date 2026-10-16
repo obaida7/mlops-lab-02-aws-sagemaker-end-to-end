@@ -3,3 +3,4 @@ uvicorn
 boto3
 jinja2
 python-multipart
+pydantic

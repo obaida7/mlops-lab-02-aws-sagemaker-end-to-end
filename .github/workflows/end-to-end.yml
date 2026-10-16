@@ -1,81 +1,138 @@
-name: End-to-End MLOps Pipeline
+name: End-to-End Banking Churn MLOps Pipeline
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/**'
+      - 'data/**'
+      - 'deploy_latest_model.py'
+      - '.github/workflows/end-to-end.yml'
   workflow_dispatch:
 
 jobs:
   train_and_register:
+    name: Model Training, Evaluation & Governance
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r scripts/requirements.txt
+        pip install boto3 sagemaker
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-1
+        aws-region: us-east-2
 
-    - name: Install dependencies
+    - name: Train and Evaluate XGBoost Model
       run: |
-        pip install --upgrade pip
-        pip install boto3 sagemaker==2.224.0
+        python scripts/train_and_evaluate.py \
+          --train data \
+          --model_dir artifacts/model \
+          --output_data_dir artifacts/output
 
-    - name: Trigger SageMaker Pipeline
+    - name: Automated Model Quality & Governance Gate
+      run: |
+        python -c "
+        import json, sys
+        with open('artifacts/model/evaluation.json') as f:
+            metrics = json.load(f)['binary_classification_metrics']
+        roc_auc = metrics['roc_auc']['value']
+        pr_auc = metrics['pr_auc']['value']
+        print(f'CI Evaluation Check: ROC-AUC={roc_auc:.4f}, PR-AUC={pr_auc:.4f}')
+        if roc_auc < 0.80 or pr_auc < 0.65:
+            print('Model Quality Gate FAILED: Model performance does not meet minimum banking regulatory standards.')
+            sys.exit(1)
+        print('Model Quality Gate PASSED: Model is eligible for Model Registry and Production Deployment!')
+        "
+
+    - name: Package Model Artifacts
+      run: |
+        cd artifacts/model
+        tar -czvf ../../model.tar.gz *
+        cd ../..
+        ls -lh model.tar.gz
+
+    - name: Upload Artifacts to S3
       env:
-        AWS_REGION: us-east-1
-        S3_BUCKET: sagemaker-us-east-1-339712725413-v3
-        SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
-        MLFLOW_TRACKING_URI: "http://ec2-3-90-232-22.compute-1.amazonaws.com:5000"
+        S3_BUCKET: sagemaker-us-east-2-227246780492-bank-churn
       run: |
-        python scripts/create_pipeline.py
+        aws s3 cp model.tar.gz s3://${S3_BUCKET}/models/model.tar.gz
+        aws s3 cp artifacts/model/evaluation.json s3://${S3_BUCKET}/models/evaluation.json
+        aws s3 cp artifacts/model/shap_summary.png s3://${S3_BUCKET}/models/shap_summary.png
+        aws s3 cp data/bank_churn.csv s3://${S3_BUCKET}/data/bank_churn.csv
 
-    - name: Wait for SageMaker to finish
+    - name: Register Model in SageMaker Model Registry
       env:
-        AWS_REGION: us-east-1
+        AWS_REGION: us-east-2
+        S3_BUCKET: sagemaker-us-east-2-227246780492-bank-churn
       run: |
-        python scripts/wait_for_sagemaker.py
+        python scripts/register_model.py
+
+    - name: Upload Governance & Explainability Artifacts to GitHub
+      uses: actions/upload-artifact@v4
+      with:
+        name: model-governance-reports
+        path: |
+          artifacts/model/evaluation.json
+          artifacts/model/shap_summary.png
 
   approve_and_deploy:
+    name: Deploy to SageMaker Serverless & Run Smoke Tests
     needs: train_and_register
-    environment: production
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install boto3 sagemaker pandas numpy scikit-learn
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-1
+        aws-region: us-east-2
 
-    - name: Install dependencies
-      run: |
-        pip install --upgrade pip
-        pip install boto3 sagemaker==2.224.0 scikit-learn joblib mlflow
-
-    - name: Deploy endpoint from MLflow
+    - name: Deploy Endpoint from SageMaker Model Registry & Smoke Test
       env:
-        AWS_REGION: us-east-1
+        AWS_REGION: us-east-2
         SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
-        S3_BUCKET: sagemaker-us-east-1-339712725413-v3
-        MLFLOW_TRACKING_URI: "http://ec2-3-90-232-22.compute-1.amazonaws.com:5000"
+        S3_BUCKET: sagemaker-us-east-2-227246780492-bank-churn
       run: |
         python deploy_latest_model.py
 
-    - name: Setup Model Monitor
+    - name: Setup SageMaker Model Monitor & Bias Auditing
       env:
-        AWS_REGION: us-east-1
+        AWS_REGION: us-east-2
         SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
-        S3_BUCKET: sagemaker-us-east-1-339712725413-v3
+        S3_BUCKET: sagemaker-us-east-2-227246780492-bank-churn
       run: |
         python scripts/setup_model_monitor.py

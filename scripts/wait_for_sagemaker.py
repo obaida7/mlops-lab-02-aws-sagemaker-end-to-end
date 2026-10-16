@@ -2,11 +2,13 @@ import boto3
 import time
 import os
 
-sm = boto3.client("sagemaker", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-pipeline_name = "wine-mlflow-pipeline"
+region = os.environ.get("AWS_REGION", "us-east-2")
+pipeline_name = "bank-churn-pipeline"
 
-print(f"Waiting for latest execution of {pipeline_name} to finish...")
-time.sleep(15) # Give create_pipeline.py a moment to actually start it
+sm = boto3.client("sagemaker", region_name=region)
+
+print(f"Waiting for latest execution of {pipeline_name} to finish in {region}...")
+time.sleep(10)
 
 executions = sm.list_pipeline_executions(
     PipelineName=pipeline_name,
@@ -24,13 +26,14 @@ print(f"Tracking execution: {latest_arn}")
 while True:
     res = sm.describe_pipeline_execution(PipelineExecutionArn=latest_arn)
     status = res["PipelineExecutionStatus"]
-    print(f"Status: {status}...")
-    
+    print(f"Current Pipeline Status: {status}...")
+
     if status == "Succeeded":
-        print("Pipeline finished successfully! Model should now be in MLflow.")
+        print("Pipeline finished successfully! Model is now registered in SageMaker Model Registry under 'bank-customer-churn'.")
         break
     elif status in ["Failed", "Fault", "Stopped"]:
-        print("Pipeline failed or was stopped.")
+        failure_reason = res.get("FailureReason", "Unknown reason")
+        print(f"Pipeline failed: {failure_reason}")
         exit(1)
-        
-    time.sleep(30)
+
+    time.sleep(20)

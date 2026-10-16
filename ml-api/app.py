@@ -1,78 +1,71 @@
-import boto3
+# ml-api/app.py
+"""
+FastAPI Banking Customer Churn Prediction Service.
+Integrates with SageMaker Runtime to query real-time endpoint 'bank-churn-endpoint'.
+"""
+import os
 import json
-from fastapi import FastAPI, Request, Form
+import time
+import boto3
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
-# SageMaker endpoint name
-ENDPOINT_NAME = "wine-quality-endpoint"
-REGION = "ap-south-1"
+ENDPOINT_NAME = os.environ.get("ENDPOINT_NAME", "bank-churn-endpoint")
+REGION = os.environ.get("AWS_REGION", "us-east-2")
 
-# SageMaker runtime client
-runtime = boto3.client(
-    "sagemaker-runtime",
-    region_name=REGION
+runtime = boto3.client("sagemaker-runtime", region_name=REGION)
+
+app = FastAPI(
+    title="Apex Bank Churn Intelligence API",
+    description="Real-time inferencing connected to AWS SageMaker Endpoints"
 )
-
-app = FastAPI()
 
 templates = Jinja2Templates(directory="templates")
 
+class CustomerProfile(BaseModel):
+    CreditScore: float
+    Geography: int
+    Gender: int
+    Age: int
+    Tenure: int
+    Balance: float
+    NumOfProducts: int
+    HasCrCard: int
+    IsActiveMember: int
+    EstimatedSalary: float
 
-# Home page
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request}
-    )
+    return templates.TemplateResponse("index.html", {"request": request})
 
-
-# Prediction API
 @app.post("/predict")
-def predict(
-    fixed_acidity: float = Form(...),
-    volatile_acidity: float = Form(...),
-    citric_acid: float = Form(...),
-    residual_sugar: float = Form(...),
-    chlorides: float = Form(...),
-    free_sulfur_dioxide: float = Form(...),
-    total_sulfur_dioxide: float = Form(...),
-    density: float = Form(...),
-    pH: float = Form(...),
-    sulphates: float = Form(...),
-    alcohol: float = Form(...)
-):
-
-    # convert to CSV format with headers
-    headers = "fixed_acidity,volatile_acidity,citric_acid,residual_sugar,chlorides,free_sulfur_dioxide,total_sulfur_dioxide,density,pH,sulphates,alcohol"
-    data = f"{fixed_acidity},{volatile_acidity},{citric_acid},{residual_sugar},{chlorides},{free_sulfur_dioxide},{total_sulfur_dioxide},{density},{pH},{sulphates},{alcohol}"
-    payload = f"{headers}\n{data}"
-
+def predict(customer: CustomerProfile):
+    payload = customer.model_dump()
+    
+    t0 = time.time()
     try:
         response = runtime.invoke_endpoint(
             EndpointName=ENDPOINT_NAME,
-            ContentType="text/csv",
-            Body=payload
+            ContentType="application/json",
+            Accept="application/json",
+            Body=json.dumps(payload)
         )
+        latency_ms = round((time.time() - t0) * 1000, 1)
 
-        result = response["Body"].read().decode()
-        
-        # Parse the JSON response from SageMaker
-        prediction_response = json.loads(result)
-        
-        # Extract prediction value from the response
-        if isinstance(prediction_response, dict) and "predictions" in prediction_response:
-            prediction_value = prediction_response["predictions"][0]["score"]
-        elif isinstance(prediction_response, list):
-            prediction_value = prediction_response[0]["score"]
-        else:
-            prediction_value = result
-
-        return {
-            "prediction": str(round(float(prediction_value), 2))
-        }
+        result_bytes = response["Body"].read().decode("utf-8")
+        result = json.loads(result_bytes)
+        result["latency_ms"] = latency_ms
+        return result
     except Exception as e:
+        latency_ms = round((time.time() - t0) * 1000, 1)
         return {
-            "prediction": f"Error: {str(e)}"
+            "error": str(e),
+            "churn_prediction": -1,
+            "churn_probability": 0.0,
+            "churn_probability_pct": "0.0%",
+            "risk_tier": "Unavailable",
+            "recommended_retention_action": f"Endpoint Error: {str(e)}",
+            "latency_ms": latency_ms
         }
