@@ -28,17 +28,16 @@ FEATURE_NAMES = [
 
 def model_fn(model_dir):
     """Loads the trained model from the model directory."""
-    model_path = os.path.join(model_dir, "model.joblib")
-    if os.path.exists(model_path):
-        model = joblib.load(model_path)
-        return model
-    
-    # Fallback to model.xgb if saved as XGBoost binary
     xgb_path = os.path.join(model_dir, "model.xgb")
     if os.path.exists(xgb_path):
         import xgboost as xgb
         model = xgb.XGBClassifier()
         model.load_model(xgb_path)
+        return model
+
+    model_path = os.path.join(model_dir, "model.joblib")
+    if os.path.exists(model_path):
+        model = joblib.load(model_path)
         return model
 
     raise FileNotFoundError(f"No valid model found in {model_dir}")
