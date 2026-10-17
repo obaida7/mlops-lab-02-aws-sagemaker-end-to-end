@@ -113,9 +113,12 @@ print(f"  Created SageMaker Model: {model_name}")
 # ═══════════════════════════════════════════════════════════════════
 # STEP 4: Create Endpoint Config (Serverless Inference)
 # ═══════════════════════════════════════════════════════════════════
-print("\n[4/5] Creating Serverless Endpoint Configuration...")
+# STEP 4: Create Real-Time Endpoint Configuration (ml.t2.medium with DataCapture)
+# ═══════════════════════════════════════════════════════════════════
+print("\n[4/5] Creating Real-Time Endpoint Configuration (ml.t2.medium with DataCapture)...")
 
 endpoint_config_name = f"bank-churn-config-v{pkg_version}-{timestamp}"
+data_capture_destination = f"s3://{BUCKET}/model-monitor/datacapture"
 
 sm.create_endpoint_config(
     EndpointConfigName=endpoint_config_name,
@@ -123,18 +126,30 @@ sm.create_endpoint_config(
         {
             "VariantName": "AllTraffic",
             "ModelName": model_name,
-            "ServerlessConfig": {
-                "MemorySizeInMB": 2048,
-                "MaxConcurrency": 5
-            }
+            "InitialInstanceCount": 1,
+            "InstanceType": "ml.t2.medium",
+            "InitialVariantWeight": 1.0
         }
     ],
+    DataCaptureConfig={
+        "EnableCapture": True,
+        "InitialSamplingPercentage": 100,
+        "DestinationS3Uri": data_capture_destination,
+        "CaptureOptions": [
+            {"CaptureMode": "Input"},
+            {"CaptureMode": "Output"}
+        ],
+        "CaptureContentTypeHeader": {
+            "JsonContentTypes": ["application/json"],
+            "CsvContentTypes": ["text/csv"]
+        }
+    },
     Tags=[
         {"Key": "Project", "Value": "BankCustomerChurn"},
         {"Key": "ModelVersion", "Value": str(pkg_version)}
     ]
 )
-print(f"  Created Endpoint Config: {endpoint_config_name}")
+print(f"  Created Endpoint Config with DataCapture: {endpoint_config_name}")
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 5: Deploy / Update Endpoint
@@ -147,15 +162,27 @@ try:
     if ep["EndpointStatus"] in ["Failed", "RollingBack"]:
         print(f"  Existing endpoint '{ENDPOINT_NAME}' is in {ep['EndpointStatus']} state. Deleting to recreate...")
         sm.delete_endpoint(EndpointName=ENDPOINT_NAME)
-        while True:
-            try:
-                sm.describe_endpoint(EndpointName=ENDPOINT_NAME)
-                time.sleep(5)
-            except sm.exceptions.ClientError:
-                break
+        waiter = sm.get_waiter("endpoint_deleted")
+        waiter.wait(EndpointName=ENDPOINT_NAME)
         endpoint_exists = False
-    else:
+    elif ep["EndpointStatus"] == "Updating":
+        print(f"  Existing endpoint '{ENDPOINT_NAME}' is currently Updating. Waiting for InService before proceeding...")
+        waiter = sm.get_waiter("endpoint_in_service")
+        waiter.wait(EndpointName=ENDPOINT_NAME)
+        ep = sm.describe_endpoint(EndpointName=ENDPOINT_NAME)
         endpoint_exists = True
+    else:
+        # Check if existing endpoint is Serverless (incompatible with in-place Provisioned update)
+        curr_cfg = sm.describe_endpoint_config(EndpointConfigName=ep["EndpointConfigName"])
+        is_serverless = "ServerlessConfig" in curr_cfg["ProductionVariants"][0]
+        if is_serverless:
+            print(f"  Existing endpoint '{ENDPOINT_NAME}' is Serverless. Recreating as Provisioned with DataCapture...")
+            sm.delete_endpoint(EndpointName=ENDPOINT_NAME)
+            waiter = sm.get_waiter("endpoint_deleted")
+            waiter.wait(EndpointName=ENDPOINT_NAME)
+            endpoint_exists = False
+        else:
+            endpoint_exists = True
 except sm.exceptions.ClientError:
     endpoint_exists = False
 
@@ -176,7 +203,7 @@ else:
         ]
     )
 
-print("  Waiting for endpoint to reach 'InService' state (Serverless endpoints spin up in ~1-2 minutes)...")
+print("  Waiting for endpoint to reach 'InService' state...")
 while True:
     status = sm.describe_endpoint(EndpointName=ENDPOINT_NAME)["EndpointStatus"]
     print(f"  Status: {status}...")
