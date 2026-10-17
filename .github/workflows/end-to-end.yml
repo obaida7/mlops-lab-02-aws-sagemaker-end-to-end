@@ -31,7 +31,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r scripts/requirements.txt
-        pip install boto3 sagemaker
+        pip install boto3 sagemaker mlflow sagemaker-mlflow
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -46,6 +46,16 @@ jobs:
           --train data \
           --model_dir artifacts/model \
           --output_data_dir artifacts/output
+
+    - name: Log Experiment Run to SageMaker Managed MLflow
+      env:
+        AWS_REGION: us-east-2
+        MLFLOW_TRACKING_URI: arn:aws:sagemaker:us-east-2:227246780492:mlflow-tracking-server/bank-churn-mlflow
+      run: |
+        python scripts/train_with_mlflow.py
+        echo "### 🧪 SageMaker Managed MLflow Experiment" >> $GITHUB_STEP_SUMMARY
+        echo "* **Tracking Server:** \`arn:aws:sagemaker:us-east-2:227246780492:mlflow-tracking-server/bank-churn-mlflow\`" >> $GITHUB_STEP_SUMMARY
+        echo "* **MLflow Dashboard:** [Open SageMaker MLflow UI](https://t-aygeiedgo5zh.us-east-2.experiments.sagemaker.aws)" >> $GITHUB_STEP_SUMMARY
 
     - name: Automated Model Quality & Governance Gate
       run: |
@@ -113,7 +123,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install boto3 "sagemaker>=2.200.0,<3.0.0" pandas numpy scikit-learn
+        pip install boto3 "sagemaker>=2.200.0,<3.0.0" pandas numpy scikit-learn mlflow sagemaker-mlflow
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4

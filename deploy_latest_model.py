@@ -69,9 +69,30 @@ if pkg_status != "Approved":
         ModelApprovalStatus="Approved",
         ApprovalDescription="Model validated: PR-AUC 0.71+, ROC-AUC 0.86+, SHAP explainability attached."
     )
-    print("  Status updated to 'Approved' successfully!")
+    print("  Status updated to 'Approved' successfully in SageMaker Model Registry!")
 else:
-    print("  Model is verified as 'Approved'.")
+    print("  Model is verified as 'Approved' in SageMaker Model Registry.")
+
+# Synchronize Promotion with SageMaker Managed MLflow
+try:
+    import mlflow
+    from mlflow import MlflowClient
+    tracking_uri = os.environ.get(
+        "MLFLOW_TRACKING_URI",
+        f"arn:aws:sagemaker:{REGION}:227246780492:mlflow-tracking-server/bank-churn-mlflow"
+    )
+    mlflow.set_tracking_uri(tracking_uri)
+    client = MlflowClient()
+    client.transition_model_version_stage(
+        name="bank-customer-churn",
+        version=str(pkg_version),
+        stage="Production",
+        archive_existing_versions=True
+    )
+    client.set_registered_model_alias(name="bank-customer-churn", alias="champion", version=str(pkg_version))
+    print(f"  ✅ MLflow Model Version {pkg_version} promoted to 'Production' (@champion)!")
+except Exception as e:
+    print(f"  [Notice] MLflow stage synchronization: {e}")
 
 # Idempotency check: Is this version already running in InService state?
 try:
