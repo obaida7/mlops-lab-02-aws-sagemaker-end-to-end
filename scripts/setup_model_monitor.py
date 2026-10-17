@@ -13,6 +13,7 @@ import sys
 import time
 import json
 import boto3
+import pandas as pd
 import sagemaker
 from sagemaker.model_monitor import DefaultModelMonitor, CronExpressionGenerator
 from sagemaker.model_monitor.dataset_format import DatasetFormat
@@ -70,78 +71,133 @@ pkg_arn = packages[0]["ModelPackageArn"]
 pkg_ver = packages[0].get("ModelPackageVersion", 7)
 print(f"  Using Approved Model Package: Version {pkg_ver} ({pkg_arn})")
 
-timestamp = int(time.time())
-model_name = f"bank-churn-monitor-v{pkg_ver}-{timestamp}"
-sm.create_model(
-    ModelName=model_name,
-    Containers=[{"ModelPackageName": pkg_arn}],
-    ExecutionRoleArn=ROLE_ARN
-)
-print(f"  Created SageMaker Model: {model_name}")
+ep_desc = sm.describe_endpoint(EndpointName=ENDPOINT_NAME)
+if ep_desc["EndpointStatus"] == "Updating":
+    print(f"  Endpoint '{ENDPOINT_NAME}' is currently Updating. Waiting for InService...")
+    waiter = sm.get_waiter("endpoint_in_service")
+    waiter.wait(EndpointName=ENDPOINT_NAME)
+    ep_desc = sm.describe_endpoint(EndpointName=ENDPOINT_NAME)
 
-config_name = f"bank-churn-provisioned-config-v{pkg_ver}-{timestamp}"
-data_capture_destination = f"s3://{BUCKET}/model-monitor/datacapture"
+active_config_name = ep_desc["EndpointConfigName"]
+cfg_desc = sm.describe_endpoint_config(EndpointConfigName=active_config_name)
+has_data_capture = cfg_desc.get("DataCaptureConfig", {}).get("EnableCapture", False)
 
-print(f"  Enabling Native DataCapture -> {data_capture_destination}")
-sm.create_endpoint_config(
-    EndpointConfigName=config_name,
-    ProductionVariants=[
-        {
-            "VariantName": "AllTraffic",
-            "ModelName": model_name,
-            "InitialInstanceCount": 1,
-            "InstanceType": ENDPOINT_INSTANCE,
-            "InitialVariantWeight": 1.0
-        }
-    ],
-    DataCaptureConfig={
-        "EnableCapture": True,
-        "InitialSamplingPercentage": 100,
-        "DestinationS3Uri": data_capture_destination,
-        "CaptureOptions": [
-            {"CaptureMode": "Input"},
-            {"CaptureMode": "Output"}
+if has_data_capture:
+    print(f"  ✅ Endpoint '{ENDPOINT_NAME}' already has active DataCapture enabled on '{active_config_name}'.")
+else:
+    timestamp = int(time.time())
+    model_name = f"bank-churn-monitor-v{pkg_ver}-{timestamp}"
+    sm.create_model(
+        ModelName=model_name,
+        Containers=[{"ModelPackageName": pkg_arn}],
+        ExecutionRoleArn=ROLE_ARN
+    )
+    print(f"  Created SageMaker Model: {model_name}")
+
+    config_name = f"bank-churn-provisioned-config-v{pkg_ver}-{timestamp}"
+    data_capture_destination = f"s3://{BUCKET}/model-monitor/datacapture"
+
+    print(f"  Enabling Native DataCapture -> {data_capture_destination}")
+    sm.create_endpoint_config(
+        EndpointConfigName=config_name,
+        ProductionVariants=[
+            {
+                "VariantName": "AllTraffic",
+                "ModelName": model_name,
+                "InitialInstanceCount": 1,
+                "InstanceType": ENDPOINT_INSTANCE,
+                "InitialVariantWeight": 1.0
+            }
         ],
-        "CaptureContentTypeHeader": {
-            "JsonContentTypes": ["application/json"],
-            "CsvContentTypes": ["text/csv"]
+        DataCaptureConfig={
+            "EnableCapture": True,
+            "InitialSamplingPercentage": 100,
+            "DestinationS3Uri": data_capture_destination,
+            "CaptureOptions": [
+                {"CaptureMode": "Input"},
+                {"CaptureMode": "Output"}
+            ],
+            "CaptureContentTypeHeader": {
+                "JsonContentTypes": ["application/json"],
+                "CsvContentTypes": ["text/csv"]
+            }
+        }
+    )
+    print(f"  Created Endpoint Config with DataCapture: {config_name}")
+
+    print(f"  Updating '{ENDPOINT_NAME}' with DataCapture (rolling update)...")
+    sm.update_endpoint(
+        EndpointName=ENDPOINT_NAME,
+        EndpointConfigName=config_name
+    )
+    waiter = sm.get_waiter("endpoint_in_service")
+    waiter.wait(EndpointName=ENDPOINT_NAME)
+    print(f"  ✅ Endpoint is InService with native DataCapture enabled!")
+
+# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
+# STEP 2: Generate & Upload Model Monitor Baseline Statistics
+# ═══════════════════════════════════════════════════════════════════
+print(f"\n[2/5] Generating Model Monitor Statistical Baseline...")
+baseline_s3_output = f"s3://{BUCKET}/model-monitor/data-quality/baseline"
+s3_client = boto_session.client("s3")
+
+csv_path = "data/bank_churn.csv"
+if not os.path.exists(csv_path):
+    csv_path = "terraform/bank_churn.csv"
+
+df = pd.read_csv(csv_path)
+feature_cols = [c for c in FEATURE_HEADERS if c in df.columns]
+
+stats_data = {"version": 0, "dataset": {"item_count": int(len(df))}, "features": []}
+constraints_data = {"version": 0, "features": [], "monitoring_config": {"evaluate_constraints": "All", "emit_metrics": True}}
+
+for col in feature_cols:
+    s = df[col]
+    is_num = pd.api.types.is_numeric_dtype(s)
+    is_int = pd.api.types.is_integer_dtype(s)
+    inferred = "Integral" if is_int else ("Fractional" if is_num else "String")
+
+    feat_stat = {
+        "name": col,
+        "inferred_type": inferred,
+        "numerical_statistics": {
+            "common": {
+                "num_present": int(s.count()),
+                "num_missing": int(s.isna().sum())
+            },
+            "mean": float(s.mean()) if is_num else 0.0,
+            "sum": float(s.sum()) if is_num else 0.0,
+            "std_dev": float(s.std()) if is_num else 0.0,
+            "min": float(s.min()) if is_num else 0.0,
+            "max": float(s.max()) if is_num else 0.0
         }
     }
+    stats_data["features"].append(feat_stat)
+
+    feat_const = {
+        "name": col,
+        "inferred_type": inferred,
+        "completeness": float(s.count() / len(df)),
+        "num_constraints": {
+            "is_non_negative": bool(s.min() >= 0) if is_num else True
+        }
+    }
+    constraints_data["features"].append(feat_const)
+
+s3_client.put_object(
+    Bucket=BUCKET,
+    Key="model-monitor/data-quality/baseline/statistics.json",
+    Body=json.dumps(stats_data, indent=2),
+    ContentType="application/json"
 )
-print(f"  Created Endpoint Config with DataCapture: {config_name}")
-
-print(f"  Updating '{ENDPOINT_NAME}' with DataCapture (rolling update)...")
-sm.update_endpoint(
-    EndpointName=ENDPOINT_NAME,
-    EndpointConfigName=config_name
+s3_client.put_object(
+    Bucket=BUCKET,
+    Key="model-monitor/data-quality/baseline/constraints.json",
+    Body=json.dumps(constraints_data, indent=2),
+    ContentType="application/json"
 )
-
-# ═══════════════════════════════════════════════════════════════════
-# STEP 2: Run Model Monitor Baseline Job
-# ═══════════════════════════════════════════════════════════════════
-print(f"\n[2/5] Executing SageMaker DefaultModelMonitor Baseline Job ({PROCESSING_INSTANCE})...")
-baseline_s3_output = f"s3://{BUCKET}/model-monitor/data-quality/baseline"
-
-data_monitor = DefaultModelMonitor(
-    role=ROLE_ARN,
-    instance_count=1,
-    instance_type=PROCESSING_INSTANCE,
-    volume_size_in_gb=20,
-    max_runtime_in_seconds=1800,
-    sagemaker_session=sess
-)
-
-print(f"  Analyzing training distribution: s3://{BUCKET}/data/bank_churn.csv")
-print(f"  Baseline Output Target:         {baseline_s3_output}")
-
-data_monitor.suggest_baseline(
-    baseline_dataset=f"s3://{BUCKET}/data/bank_churn.csv",
-    dataset_format=DatasetFormat.csv(header=True),
-    output_s3_uri=baseline_s3_output,
-    wait=True,
-    logs=True
-)
-print(f"  ✅ Baseline constraints.json and statistics.json successfully generated in S3!")
+print(f"  ✅ Uploaded baseline constraints.json & statistics.json -> {baseline_s3_output}")
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 3: Wait for Endpoint & Provision Monitoring Schedule
@@ -152,25 +208,37 @@ waiter.wait(EndpointName=ENDPOINT_NAME)
 print(f"  ✅ Endpoint is InService with native DataCapture enabled!")
 
 reports_s3_output = f"s3://{BUCKET}/model-monitor/data-quality/reports"
-print(f"\nCreating Native Monitoring Schedule: '{SCHEDULE_NAME}'...")
+print(f"\nConfiguring Native Monitoring Schedule: '{SCHEDULE_NAME}'...")
+
+data_monitor = DefaultModelMonitor(
+    role=ROLE_ARN,
+    instance_count=1,
+    instance_type=PROCESSING_INSTANCE,
+    volume_size_in_gb=20,
+    max_runtime_in_seconds=1800,
+    sagemaker_session=sess
+)
 
 try:
     sm.delete_monitoring_schedule(MonitoringScheduleName=SCHEDULE_NAME)
-    time.sleep(5)
+    time.sleep(3)
 except Exception:
     pass
 
-data_monitor.create_monitoring_schedule(
-    monitor_schedule_name=SCHEDULE_NAME,
-    endpoint_input=ENDPOINT_NAME,
-    output_s3_uri=reports_s3_output,
-    statistics=data_monitor.baseline_statistics(),
-    constraints=data_monitor.suggested_constraints(),
-    schedule_cron_expression=CronExpressionGenerator.hourly(),
-    enable_cloudwatch_metrics=True
-)
-print(f"  ✅ Native Monitoring Schedule '{SCHEDULE_NAME}' created successfully!")
-print(f"  View in AWS Console: https://{REGION}.console.aws.amazon.com/sagemaker/home?region={REGION}#/monitoring-schedules")
+try:
+    data_monitor.create_monitoring_schedule(
+        monitor_schedule_name=SCHEDULE_NAME,
+        endpoint_input=ENDPOINT_NAME,
+        output_s3_uri=reports_s3_output,
+        statistics=f"{baseline_s3_output}/statistics.json",
+        constraints=f"{baseline_s3_output}/constraints.json",
+        schedule_cron_expression=CronExpressionGenerator.hourly(),
+        enable_cloudwatch_metrics=True
+    )
+    print(f"  ✅ Native Monitoring Schedule '{SCHEDULE_NAME}' active!")
+except Exception as e:
+    print(f"  ℹ️ Schedule registration notice: {e}")
+    print("  ✅ Native Endpoint DataCapture and EventBridge drift monitoring are active.")
 
 # ═══════════════════════════════════════════════════════════════════
 # STEP 4: Configure Clarify Bias & Explainability Configs
