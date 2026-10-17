@@ -90,7 +90,7 @@ def destroy_endpoint():
 
 
 def destroy_configs_and_models():
-    print("\n[4/4] Cleaning up orphaned Endpoint Configs and Model resources...")
+    print("\n[4/5] Cleaning up orphaned Endpoint Configs and Model resources...")
     try:
         configs = sm.list_endpoint_configs(
             NameContains="bank-churn",
@@ -121,19 +121,57 @@ def destroy_configs_and_models():
         print(f"  [Notice] Config/model cleanup: {e}")
 
 
+def destroy_cloudwatch_observability():
+    print("\n[5/5] Cleaning up CloudWatch Alarms & Dashboards...")
+    cw = session.client("cloudwatch")
+    logs = session.client("logs")
+    
+    # 1. Alarms
+    alarms = [
+        "BankChurn-5xxErrorAlarm",
+        "BankChurn-P95LatencySLAAlarm",
+        "BankChurn-DataDriftViolationAlarm",
+        "BankChurn-ThrottlingAlarm"
+    ]
+    try:
+        cw.delete_alarms(AlarmNames=alarms)
+        print(f"  ✅ Deleted CloudWatch alarms: {', '.join(alarms)}")
+    except Exception as e:
+        print(f"  [Notice] Alarm deletion: {e}")
+        
+    # 2. Dashboard
+    try:
+        cw.delete_dashboards(DashboardNames=["BankChurn-MLOps-Dashboard"])
+        print("  ✅ Deleted CloudWatch dashboard: BankChurn-MLOps-Dashboard")
+    except Exception as e:
+        print(f"  [Notice] Dashboard deletion: {e}")
+
+    # 3. Log Groups
+    for lg in ["/aws/sagemaker/Endpoints/bank-churn-endpoint", "/aws/sagemaker/ProcessingJobs"]:
+        try:
+            logs.delete_log_group(logGroupName=lg)
+            print(f"  ✅ Deleted Log Group: {lg}")
+        except Exception:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Destroy Bank Churn MLOps Infrastructure")
     parser.add_argument("--full", action="store_true", help="Also run terraform destroy to remove S3/SNS/EventBridge")
+    parser.add_argument("--keep-cloudwatch", action="store_true", help="Keep CloudWatch alarms and dashboards")
     args = parser.parse_args()
 
     print("=" * 65)
-    print(f"DESTROYING BANK CHURN MLOPS COMPUTE & ENDPOINTS ({REGION})")
+    print(f"DESTROYING BANK CHURN MLOPS COMPUTE & OBSERVABILITY ({REGION})")
     print("=" * 65)
 
     destroy_monitoring_schedules()
     stop_processing_jobs()
     destroy_endpoint()
     destroy_configs_and_models()
+
+    if not args.keep_cloudwatch:
+        destroy_cloudwatch_observability()
 
     if args.full:
         print("\n[Full Mode] Executing Terraform Destroy...")
@@ -142,7 +180,7 @@ def main():
         print("  ✅ Terraform resources destroyed.")
 
     print("\n" + "=" * 65)
-    print("TEARDOWN COMPLETE: $0.00 ACTIVE COMPUTE CHARGES.")
+    print("TEARDOWN COMPLETE: $0.00 ACTIVE CHARGES (CLEAN STATE).")
     print("=" * 65)
 
 
