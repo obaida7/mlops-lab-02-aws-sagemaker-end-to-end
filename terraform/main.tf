@@ -6,6 +6,12 @@ terraform {
       version = "~> 6.0"
     }
   }
+
+  backend "s3" {
+    bucket = "sagemaker-us-east-2-227246780492"
+    key    = "terraform/state/bank-churn.tfstate"
+    region = "us-east-2"
+  }
 }
 
 provider "aws" {
