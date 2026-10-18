@@ -42,7 +42,11 @@ jobs:
 
     - name: Teardown Compute and Endpoints ($0.00 Idle Cost)
       run: |
-        python scripts/destroy_all.py
+        if [ "${{ github.event.inputs.destroy_scope }}" = "full_infrastructure" ]; then
+          python scripts/destroy_all.py --clean-registry
+        else
+          python scripts/destroy_all.py
+        fi
 
     - name: Setup Terraform (if full_infrastructure selected)
       if: ${{ github.event.inputs.destroy_scope == 'full_infrastructure' }}

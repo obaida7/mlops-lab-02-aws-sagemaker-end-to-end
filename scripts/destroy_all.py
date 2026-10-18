@@ -121,8 +121,36 @@ def destroy_configs_and_models():
         print(f"  [Notice] Config/model cleanup: {e}")
 
 
+def destroy_model_packages():
+    print("\n[5/6] Cleaning up SageMaker Model Packages in Registry...")
+    try:
+        groups = sm.list_model_package_groups(
+            NameContains="bank-customer-churn",
+            MaxResults=10
+        ).get("ModelPackageGroupSummaryList", [])
+        
+        for grp in groups:
+            grp_name = grp["ModelPackageGroupName"]
+            packages = sm.list_model_packages(
+                ModelPackageGroupName=grp_name,
+                MaxResults=100
+            ).get("ModelPackageSummaryList", [])
+            for pkg in packages:
+                pkg_arn = pkg["ModelPackageArn"]
+                print(f"  Deleting Model Package: {pkg_arn}...")
+                try:
+                    sm.delete_model_package(ModelPackageName=pkg_arn)
+                    print(f"  ✅ Deleted {pkg_arn}")
+                except Exception as e:
+                    print(f"  Could not delete {pkg_arn}: {e}")
+        if not groups:
+            print("  No model package groups found.")
+    except Exception as e:
+        print(f"  [Notice] Model package cleanup: {e}")
+
+
 def destroy_cloudwatch_observability():
-    print("\n[5/5] Cleaning up CloudWatch Alarms & Dashboards...")
+    print("\n[6/6] Cleaning up CloudWatch Alarms & Dashboards...")
     cw = session.client("cloudwatch")
     logs = session.client("logs")
     
@@ -158,6 +186,7 @@ def destroy_cloudwatch_observability():
 def main():
     parser = argparse.ArgumentParser(description="Destroy Bank Churn MLOps Infrastructure")
     parser.add_argument("--full", action="store_true", help="Also run terraform destroy to remove S3/SNS/EventBridge")
+    parser.add_argument("--clean-registry", action="store_true", help="Delete model packages so ModelPackageGroup can be destroyed")
     parser.add_argument("--keep-cloudwatch", action="store_true", help="Keep CloudWatch alarms and dashboards")
     args = parser.parse_args()
 
@@ -169,6 +198,9 @@ def main():
     stop_processing_jobs()
     destroy_endpoint()
     destroy_configs_and_models()
+
+    if args.clean_registry or args.full:
+        destroy_model_packages()
 
     if not args.keep_cloudwatch:
         destroy_cloudwatch_observability()
@@ -186,3 +218,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
