@@ -209,7 +209,7 @@ def simulate_incident_2():
     try:
         events.put_events(
             Entries=[{
-                "Source": "aws.sagemaker",
+                "Source": "custom.sagemaker",
                 "DetailType": "SageMaker Model Monitor Schedule Status",
                 "Detail": json.dumps({
                     "MonitorScheduleStatus": "CompletedWithViolations",

@@ -33,7 +33,7 @@ resource "aws_cloudwatch_event_rule" "model_monitor_drift" {
   description = "Triggers alerts and automated workflows on SageMaker Model Monitor violations"
 
   event_pattern = jsonencode({
-    source        = ["aws.sagemaker"]
+    source        = ["aws.sagemaker", "custom.sagemaker"]
     "detail-type" = ["SageMaker Model Monitor Schedule Status"]
     detail = {
       MonitorScheduleStatus = ["CompletedWithViolations"]
