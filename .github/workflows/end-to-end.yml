@@ -1,14 +1,6 @@
 name: End-to-End Banking Churn MLOps Pipeline
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'scripts/**'
-      - 'data/**'
-      - 'deploy_latest_model.py'
-      - '.github/workflows/end-to-end.yml'
   workflow_dispatch:
 
 jobs:
