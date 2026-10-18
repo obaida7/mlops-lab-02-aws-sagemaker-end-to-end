@@ -2,6 +2,15 @@ name: End-to-End Banking Churn MLOps Pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      data_mode:
+        description: 'Dataset for Training / Retraining'
+        required: true
+        default: 'baseline'
+        type: choice
+        options:
+          - 'baseline'
+          - 'retrain_with_production_capture'
 
 jobs:
   train_and_register:
@@ -31,6 +40,14 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-east-2
+
+    - name: Ingest S3 Data Capture & Prepare Retraining Dataset
+      if: ${{ github.event.inputs.data_mode == 'retrain_with_production_capture' }}
+      env:
+        AWS_REGION: us-east-2
+        S3_BUCKET: sagemaker-us-east-2-227246780492-bank-churn
+      run: |
+        python scripts/prep_retrain_data.py --blend_ratio 0.30
 
     - name: Train and Evaluate XGBoost Model
       run: |

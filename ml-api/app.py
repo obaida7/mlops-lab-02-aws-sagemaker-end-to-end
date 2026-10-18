@@ -14,7 +14,7 @@ import boto3
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 ENDPOINT_NAME = os.environ.get("ENDPOINT_NAME", "bank-churn-endpoint")
 REGION = os.environ.get("AWS_REGION", "us-east-2")
@@ -38,16 +38,31 @@ app = FastAPI(
 templates = Jinja2Templates(directory="templates")
 
 class CustomerProfile(BaseModel):
-    CreditScore: float
-    Geography: int
-    Gender: int
-    Age: int
-    Tenure: int
-    Balance: float
-    NumOfProducts: int
-    HasCrCard: int
-    IsActiveMember: int
-    EstimatedSalary: float
+    CreditScore: float = 650.0
+    Geography: int = 0
+    Gender: int = 1
+    Age: int = 40
+    Tenure: int = 3
+    Balance: float = 0.0
+    NumOfProducts: int = 1
+    HasCrCard: int = 1
+    IsActiveMember: int = 1           # Default fallback prevents missing field crash
+    EstimatedSalary: float = 50000.0
+
+    @field_validator("Balance", mode="before")
+    @classmethod
+    def clean_currency(cls, v):
+        """Strips '$' and commas from currency strings like '$124,500.00'."""
+        if isinstance(v, str):
+            clean_str = v.replace("$", "").replace(",", "").strip()
+            return float(clean_str)
+        return float(v)
+
+    @field_validator("CreditScore", "Age", "Tenure", mode="before")
+    @classmethod
+    def coerce_numeric(cls, v):
+        """Coerces numeric strings like '45' to numbers."""
+        return float(v) if v is not None else 0.0
 
 def save_data_capture_to_s3(payload: dict, result: dict, latency_ms: float):
     """Asynchronously logs production inference payloads and model predictions to S3 Data Capture."""
