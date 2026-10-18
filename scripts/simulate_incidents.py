@@ -50,6 +50,7 @@ boto_session = boto3.Session(region_name=REGION)
 runtime = boto_session.client("sagemaker-runtime")
 cw = boto_session.client("cloudwatch")
 sns = boto_session.client("sns")
+events = boto_session.client("events")
 
 def print_banner(incident_id, title, severity):
     print("\n" + "=" * 70)
@@ -203,6 +204,24 @@ def simulate_incident_2():
         print(f"  ✅ Published P1 Alert to SNS Topic: {SNS_TOPIC_ARN}")
     except Exception as e:
         print(f"  [Notice] SNS Publish: {e}")
+
+    # Emit EventBridge Event to trigger automated retraining & alerts
+    try:
+        events.put_events(
+            Entries=[{
+                "Source": "aws.sagemaker",
+                "DetailType": "SageMaker Model Monitor Schedule Status",
+                "Detail": json.dumps({
+                    "MonitorScheduleStatus": "CompletedWithViolations",
+                    "EndpointName": ENDPOINT_NAME,
+                    "Violations": drift_violations
+                }),
+                "EventBusName": "default"
+            }]
+        )
+        print("  ✅ Dispatched Event to EventBridge: bank-churn-model-monitor-drift-rule")
+    except Exception as e:
+        print(f"  [Notice] EventBridge: {e}")
 
     print("\n[Step 3: On-Call Engineer Resolution Plan]")
     print("  1. Triage: Age & Balance distributions shifted beyond statistical stability limits.")
