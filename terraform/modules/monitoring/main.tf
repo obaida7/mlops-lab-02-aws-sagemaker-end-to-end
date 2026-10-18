@@ -50,6 +50,87 @@ resource "aws_cloudwatch_event_target" "sns_target" {
 }
 
 # ════════════════════════════════════════════════════════════════════════
+# 2b. EVENTBRIDGE TARGET 2: API DESTINATION FOR GITHUB ACTIONS RETRAINING
+# ════════════════════════════════════════════════════════════════════════
+resource "aws_cloudwatch_event_connection" "github_connection" {
+  name               = "bank-churn-github-connection"
+  description        = "Authorization connection for GitHub Actions API"
+  authorization_type = "API_KEY"
+
+  auth_parameters {
+    api_key {
+      key   = "Authorization"
+      value = "Bearer ${var.github_token}"
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_api_destination" "github_api_destination" {
+  name                             = "bank-churn-github-retrain-destination"
+  description                      = "POSTs to GitHub Actions to trigger end-to-end.yml on data drift"
+  invocation_endpoint              = "https://api.github.com/repos/${var.github_repo}/actions/workflows/end-to-end.yml/dispatches"
+  http_method                      = "POST"
+  invocation_rate_limit_per_second = 1
+  connection_arn                   = aws_cloudwatch_event_connection.github_connection.arn
+}
+
+resource "aws_iam_role" "eventbridge_api_destination_role" {
+  name = "bank-churn-eventbridge-api-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_policy" "eventbridge_api_destination_policy" {
+  name        = "bank-churn-eventbridge-api-policy"
+  description = "Allows EventBridge to invoke the GitHub Actions API Destination"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "events:InvokeApiDestination"
+        Resource = aws_cloudwatch_event_api_destination.github_api_destination.arn
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "eventbridge_api_attach" {
+  role       = aws_iam_role.eventbridge_api_destination_role.name
+  policy_arn = aws_iam_policy.eventbridge_api_destination_policy.arn
+}
+
+resource "aws_cloudwatch_event_target" "github_target" {
+  rule      = aws_cloudwatch_event_rule.model_monitor_drift.name
+  target_id = "TriggerGitHubRetrainingWorkflow"
+  arn       = aws_cloudwatch_event_api_destination.github_api_destination.arn
+  role_arn  = aws_iam_role.eventbridge_api_destination_role.arn
+
+  input = jsonencode({
+    ref = "main"
+    inputs = {
+      data_mode = "retrain_with_production_capture"
+    }
+  })
+}
+
+# ════════════════════════════════════════════════════════════════════════
 # 3. CLOUDWATCH PRODUCTION METRIC ALARMS
 # ════════════════════════════════════════════════════════════════════════
 resource "aws_cloudwatch_metric_alarm" "error_5xx" {

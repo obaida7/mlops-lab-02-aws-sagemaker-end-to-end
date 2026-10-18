@@ -40,6 +40,13 @@ variable "dashboard_name" {
   default     = "BankChurn-MLOps-Dashboard"
 }
 
+variable "github_token" {
+  description = "GitHub Personal Access Token for EventBridge retraining trigger"
+  type        = string
+  sensitive   = true
+  default     = "ghp_placeholder_token_for_dispatch"
+}
+
 variable "tags" {
   description = "Default resource tags applied across all MLOps modules"
   type        = map(string)

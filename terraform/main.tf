@@ -57,5 +57,6 @@ module "monitoring" {
   sns_topic_name = var.sns_topic_name
   endpoint_name  = var.endpoint_name
   dashboard_name = var.dashboard_name
+  github_token   = var.github_token
   tags           = var.tags
 }
