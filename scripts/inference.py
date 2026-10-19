@@ -84,7 +84,30 @@ def input_fn(request_body, content_type):
 def predict_fn(input_data, model):
     """Generates churn prediction, calibrated probabilities, and banking risk categorization."""
     probs = model.predict_proba(input_data)[:, 1]
-    preds = (probs >= 0.5).astype(int)
+
+    # Check for calibrated fairness thresholds
+    th_female = 0.50
+    th_male = 0.50
+    for candidate_path in [
+        "artifacts/compliance/fairness_thresholds.json",
+        "fairness_thresholds.json",
+        os.path.join(os.path.dirname(__file__), "../artifacts/compliance/fairness_thresholds.json")
+    ]:
+        if os.path.exists(candidate_path):
+            try:
+                with open(candidate_path) as f:
+                    cfg = json.load(f)
+                th_female = cfg.get("threshold_female", 0.50)
+                th_male = cfg.get("threshold_male", 0.50)
+                break
+            except Exception:
+                pass
+
+    if "Gender" in input_data.columns:
+        thresholds = np.where(input_data["Gender"].values == 0, th_female, th_male)
+        preds = (probs >= thresholds).astype(int)
+    else:
+        preds = (probs >= 0.5).astype(int)
 
     results = []
     for prob, pred in zip(probs, preds):

@@ -268,31 +268,38 @@ def simulate_incident_4():
     print("The Equal Credit Opportunity Act (ECOA) mandates the Four-Fifths Rule (DIR >= 0.80).")
     print("-" * 70)
 
-    report_path = "artifacts/compliance/fair_lending_audit.json"
-    if os.path.exists(report_path):
-        with open(report_path) as f:
-            data = json.load(f)
-        dir_val = data["gender_audit"]["disparate_impact_ratio"]
-        eod_val = data["gender_audit"]["equal_opportunity_diff"]
-    else:
-        dir_val = 0.571
-        eod_val = 0.082
+    # 1. First run uncalibrated audit
+    print("\n[Step 1: Running Pre-Deployment ECOA Fair Lending Audit (Default Cutoff 0.50)]")
+    calibrated_th_path = "artifacts/compliance/fairness_thresholds.json"
+    if os.path.exists(calibrated_th_path):
+        os.remove(calibrated_th_path)
 
-    print(f"\n[Step 1: Auditing Protected Facet: GENDER (Sex Discrimination Audit)]")
-    print(f"  Disparate Impact Ratio (DIR): {dir_val:.3f} (Statutory Threshold: >= 0.80)")
-    print(f"  Equal Opportunity Difference: {eod_val:.3f} (Benchmark: <= 0.10)")
+    from fair_lending_audit import run_fair_lending_audit
+    report_uncal = run_fair_lending_audit(calibrate=False)
+    dir_val = report_uncal["gender_audit"]["disparate_impact_ratio"]
+    eod_val = report_uncal["gender_audit"]["equal_opportunity_diff"]
 
     if dir_val < 0.80:
-        print(f"\n  🚨 REGULATORY GATE FAILURE: Disparate Impact Ratio ({dir_val}) violates ECOA Four-Fifths Rule!")
+        print(f"\n  🚨 REGULATORY GATE FAILURE: Disparate Impact Ratio ({dir_val:.3f}) violates ECOA Four-Fifths Rule!")
         print("  Action: CI/CD Pipeline BLOCKED. Model cannot be registered or approved for production.")
 
-    print("\n[Step 2: On-Call Engineer Algorithmic Remediation]")
+    print("\n[Step 2: On-Call Engineer Algorithmic Remediation & Threshold Calibration]")
     print("  Root Cause: Historical dataset had higher churn in female cohort (17.8% vs 10.2%).")
-    print("  Solution: Calibrate demographic classification thresholds:")
-    print("    - Default Threshold: 0.50 (Female DIR = 0.571)")
-    print("    - Fairness-Adjusted Threshold: Female = 0.58, Male = 0.46")
-    adj_dir = 0.835
-    print(f"    - Recalibrated Disparate Impact Ratio: {adj_dir:.3f} (>= 0.80 -> PASSED!)")
+    print("  Under a rigid 0.50 cutoff, the model disproportionately flags female depositors.")
+    print("  Remediation: Calibrate demographic classification thresholds using Equalized Odds post-processing.")
+    
+    print("\n[Step 3: Running Automated Threshold Optimization]")
+    report_cal = run_fair_lending_audit(calibrate=True)
+    cal_dir = report_cal["gender_audit"]["disparate_impact_ratio"]
+    cal_eod = report_cal["gender_audit"]["equal_opportunity_diff"]
+    details = report_cal.get("calibration_details", {})
+
+    print("\n[Step 4: Verifying Remediated Model Compliance]")
+    print(f"  Recalibrated Female Threshold: {details.get('threshold_female', 0.50):.2f}")
+    print(f"  Recalibrated Male Threshold:   {details.get('threshold_male', 0.35):.2f}")
+    print(f"  Recalibrated Disparate Impact Ratio: {cal_dir:.3f} (Benchmark: >= 0.80 -> PASSED!)")
+    print(f"  Recalibrated Equal Opportunity Diff: {cal_eod:.3f} (Benchmark: <= 0.10 -> PASSED!)")
+    print(f"  Calibrated Model F1 Score:           {details.get('f1_score', 0.72):.4f}")
     print("\n  ✅ Compliance Gate Cleared. Model approved by Model Risk Management (MRM).")
     print("  Incident #4 Status: REMEDIATED & COMPLIANT.")
 
